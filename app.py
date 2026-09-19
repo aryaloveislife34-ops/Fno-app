@@ -7,9 +7,9 @@ from datetime import datetime
 import json
 import os
 
-st.set_page_config(page_title="F&O Multi-Index Assistant", layout="wide", page_icon="🎯")
-st.title("🎯 F&O Assistant — Nifty + Sensex")
-st.caption("Dono index ek saath • Voice signals • Hero Score • Training Log")
+st.set_page_config(page_title="F&O Global Assistant", layout="wide", page_icon="🌍")
+st.title("🌍 F&O Assistant — India + Global Markets")
+st.caption("Nifty • Sensex • US • Asia • Europe")
 
 LOG_FILE = "training_log.json"
 
@@ -41,6 +41,29 @@ def get_vix():
         return float(vix.iloc[-1])
     except:
         return 14.0
+
+@st.cache_data(ttl=300)
+def get_global_market(ticker):
+    """Global market ka latest data"""
+    try:
+        df = yf.download(ticker, period="5d", interval="1d", progress=False)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df = df.dropna()
+        if len(df) < 2:
+            return None
+        current = float(df['Close'].iloc[-1])
+        prev = float(df['Close'].iloc[-2])
+        change = current - prev
+        change_pct = (change / prev) * 100
+        return {
+            'price': current,
+            'change': change,
+            'change_pct': change_pct,
+            'up': change > 0
+        }
+    except:
+        return None
 
 def add_indicators(df):
     df = df.copy()
@@ -128,6 +151,7 @@ def analyze_index(symbol):
     }
 
 def make_chart(df, symbol, color='#2196F3'):
+    df = df.tail(100).copy()
     fig = go.Figure()
     fig.add_trace(go.Candlestick(
         x=df.index, open=df['Open'], high=df['High'],
@@ -135,35 +159,71 @@ def make_chart(df, symbol, color='#2196F3'):
         increasing_line_color='#26a69a', decreasing_line_color='#ef5350'
     ))
     fig.add_trace(go.Scatter(x=df.index, y=df['EMA20'], name='EMA20',
-                              line=dict(color=color, width=1.5)))
+                              line=dict(color=color, width=2)))
     fig.add_trace(go.Scatter(x=df.index, y=df['VWAP'], name='VWAP',
-                              line=dict(color='#FFD700', width=1.5, dash='dash')))
+                              line=dict(color='#FFD700', width=2, dash='dash')))
     fig.update_layout(
         title=f"{symbol}",
-        template='plotly_dark', height=380,
+        template='plotly_dark',
+        height=600,
         xaxis_rangeslider_visible=False,
-        margin=dict(l=10, r=10, t=40, b=10)
+        margin=dict(l=10, r=10, t=50, b=10),
+        dragmode='pan',
+        hovermode='x unified'
     )
     return fig
 
-def voice_text(nifty, sensex, vix):
-    """Normal Hindi/Hinglish me samjhao"""
-    if vix < 12:
-        vix_msg = "Market abhi shaant hai. Bade moves ki ummeed kam hai"
-    elif vix < 15:
-        vix_msg = "Market normal hai. Trade kar sakte ho"
-    elif vix < 20:
-        vix_msg = "Market thoda tez hai. Bade moves aa sakte hain"
-    else:
-        vix_msg = "Market bahut tez hai. Sambhal ke, bade moves aa rahe hain"
+def get_global_sentiment():
+    """Global markets ka overall sentiment"""
+    markets = {
+        'Dow Jones': '^DJI',
+        'S&P 500': '^GSPC',
+        'Nasdaq': '^IXIC',
+        'Nikkei': '^N225',
+        'Hang Seng': '^HSI',
+        'FTSE': '^FTSE',
+        'DAX': '^GDAXI'
+    }
     
-    msg = f"Namaste. Market update suniye. {vix_msg}. "
+    results = {}
+    up_count = 0
+    down_count = 0
+    
+    for name, ticker in markets.items():
+        data = get_global_market(ticker)
+        if data:
+            results[name] = data
+            if data['up']:
+                up_count += 1
+            else:
+                down_count += 1
+    
+    if up_count > down_count:
+        sentiment = "BULLISH 🟢"
+    elif down_count > up_count:
+        sentiment = "BEARISH 🔴"
+    else:
+        sentiment = "MIXED 🟡"
+    
+    return results, sentiment, up_count, down_count
+
+def voice_text(nifty, sensex, vix, global_sentiment):
+    """Normal Hindi me samjhao"""
+    if vix < 12:
+        vix_msg = "Market abhi shaant hai"
+    elif vix < 15:
+        vix_msg = "Market normal hai"
+    elif vix < 20:
+        vix_msg = "Market thoda tez hai"
+    else:
+        vix_msg = "Market bahut tez hai"
+    
+    msg = f"Namaste. Market update suniye. "
+    msg += f"Global market ka sentiment {global_sentiment} hai. "
+    msg += f"India VIX {vix:.1f} — {vix_msg}. "
     
     if nifty:
-        price = nifty['price']; score = nifty['score']
-        profit = nifty['profit_t1']; loss = nifty['loss_sl']
-        entry = nifty['entry']; sl = nifty['sl']; target = nifty['t1']
-        
+        score = nifty['score']
         if nifty['trade'] == 'BUY CE':
             direction = "upar ja raha hai"; option = "Call option khareedo"
         else:
@@ -173,17 +233,14 @@ def voice_text(nifty, sensex, vix):
         elif score >= 60: strength = "strong"
         else: strength = "thoda kamzor"
         
-        msg += f"Nifty abhi {price:.0f} pe hai. Market {direction}. "
+        msg += f"Nifty abhi {nifty['price']:.0f} pe hai. Market {direction}. "
         msg += f"Signal {strength} hai — {score} out of 100. "
-        msg += f"Aap {entry:.0f} pe {option}. "
-        msg += f"Agar {target:.0f} tak gaya, to {profit:.1f} percent ka fayda. "
-        msg += f"Lekin agar {sl:.0f} pe aa gaya, to {loss:.1f} percent ka nuksan. Stop loss zaroor lagao. "
+        msg += f"Aap {nifty['entry']:.0f} pe {option}. "
+        msg += f"Agar {nifty['t1']:.0f} tak gaya, to {nifty['profit_t1']:.1f} percent ka fayda. "
+        msg += f"Agar {nifty['sl']:.0f} pe aa gaya, to {nifty['loss_sl']:.1f} percent ka nuksan. "
     
     if sensex:
-        price = sensex['price']; score = sensex['score']
-        profit = sensex['profit_t1']; loss = sensex['loss_sl']
-        entry = sensex['entry']; sl = sensex['sl']; target = sensex['t1']
-        
+        score = sensex['score']
         if sensex['trade'] == 'BUY CE':
             direction = "upar ja raha hai"; option = "Call option khareedo"
         else:
@@ -193,23 +250,23 @@ def voice_text(nifty, sensex, vix):
         elif score >= 60: strength = "strong"
         else: strength = "thoda kamzor"
         
-        msg += f"Sensex abhi {price:.0f} pe hai. Market {direction}. "
+        msg += f"Sensex abhi {sensex['price']:.0f} pe hai. Market {direction}. "
         msg += f"Signal {strength} hai — {score} out of 100. "
-        msg += f"Aap {entry:.0f} pe {option}. "
-        msg += f"Agar {target:.0f} tak gaya, to {profit:.1f} percent ka fayda. "
-        msg += f"Lekin agar {sl:.0f} pe aa gaya, to {loss:.1f} percent ka nuksan. "
+        msg += f"Aap {sensex['entry']:.0f} pe {option}. "
+        msg += f"Agar {sensex['t1']:.0f} tak gaya, to {sensex['profit_t1']:.1f} percent ka fayda. "
+        msg += f"Agar {sensex['sl']:.0f} pe aa gaya, to {sensex['loss_sl']:.1f} percent ka nuksan. "
     
     if nifty and sensex:
         if nifty['trade'] == sensex['trade']:
             msg += f"Dono index ek hi direction me hain — signal strong hai. "
         else:
-            msg += "Dono index alag alag direction me hain — market me confusion hai. Aaj wait karna better hai. "
+            msg += "Dono index alag alag direction me hain — market me confusion hai. Wait karo. "
     
-    msg += "Yaad rakhiye — yeh sirf analysis hai. Guarantee nahi. Stop loss zaroor lagao. Paper trade karo pehle."
+    msg += "Yaad rakhiye — yeh sirf analysis hai. Guarantee nahi. Stop loss zaroor lagao."
     return msg
 
 # ============ UI ============
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Live Dashboard", "🎙️ Voice", "📝 Training Log", "📈 Accuracy"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Live", "🌍 Global Markets", "🎙️ Voice", "📝 Training", "📈 Accuracy"])
 
 with tab1:
     c1, c2 = st.columns([3, 1])
@@ -220,10 +277,9 @@ with tab1:
     
     vix = get_vix()
     vix_color = "🟢" if vix < 15 else ("🟡" if vix < 20 else "🔴")
-    vix_msg = "Shant" if vix < 12 else ("Normal" if vix < 15 else ("Volatile" if vix < 20 else "Bahut Volatile"))
-    st.markdown(f"### {vix_color} India VIX: **{vix:.2f}** — {vix_msg}")
+    st.markdown(f"### {vix_color} India VIX: **{vix:.2f}**")
     
-    with st.spinner("Nifty aur Sensex analyze kar raha hoon..."):
+    with st.spinner("Analyzing..."):
         nifty = analyze_index("NIFTY")
         sensex = analyze_index("SENSEX")
     
@@ -234,10 +290,10 @@ with tab1:
         col1, col2 = st.columns(2)
         
         with col1:
-            st.markdown("### 🔵 NIFTY 50")
+            st.markdown("### 🔵 NIFTY")
             m1, m2, m3 = st.columns(3)
             m1.metric("Price", f"{nifty['price']:,.0f}")
-            m2.metric("Hero Score", f"{nifty['score']}/100")
+            m2.metric("Score", f"{nifty['score']}/100")
             m3.metric("Signal", nifty['trade'])
             
             if nifty['trade'] == 'BUY CE':
@@ -246,18 +302,17 @@ with tab1:
                 st.error(f"🔴 **{nifty['trade']}** — Bechne ka mauka")
             
             st.write(f"**Entry:** {nifty['entry']:,.0f}")
-            st.write(f"**Stop Loss:** {nifty['sl']:,.0f} ({nifty['loss_sl']:.1f}% risk)")
-            st.write(f"**Target 1:** {nifty['t1']:,.0f} ({nifty['profit_t1']:.1f}% profit)")
-            st.write(f"**Target 2:** {nifty['t2']:,.0f} ({nifty['profit_t2']:.1f}% profit)")
+            st.write(f"**Stop Loss:** {nifty['sl']:,.0f} ({nifty['loss_sl']:.1f}%)")
+            st.write(f"**Target 1:** {nifty['t1']:,.0f} ({nifty['profit_t1']:.1f}%)")
+            st.write(f"**Target 2:** {nifty['t2']:,.0f} ({nifty['profit_t2']:.1f}%)")
             
-            fig1 = make_chart(nifty['df'], "NIFTY", '#2196F3')
-            st.plotly_chart(fig1, use_container_width=True)
+            st.plotly_chart(make_chart(nifty['df'], "NIFTY", '#2196F3'), use_container_width=True)
         
         with col2:
             st.markdown("### 🟠 SENSEX")
             m1, m2, m3 = st.columns(3)
             m1.metric("Price", f"{sensex['price']:,.0f}")
-            m2.metric("Hero Score", f"{sensex['score']}/100")
+            m2.metric("Score", f"{sensex['score']}/100")
             m3.metric("Signal", sensex['trade'])
             
             if sensex['trade'] == 'BUY CE':
@@ -266,24 +321,80 @@ with tab1:
                 st.error(f"🔴 **{sensex['trade']}** — Bechne ka mauka")
             
             st.write(f"**Entry:** {sensex['entry']:,.0f}")
-            st.write(f"**Stop Loss:** {sensex['sl']:,.0f} ({sensex['loss_sl']:.1f}% risk)")
-            st.write(f"**Target 1:** {sensex['t1']:,.0f} ({sensex['profit_t1']:.1f}% profit)")
-            st.write(f"**Target 2:** {sensex['t2']:,.0f} ({sensex['profit_t2']:.1f}% profit)")
+            st.write(f"**Stop Loss:** {sensex['sl']:,.0f} ({sensex['loss_sl']:.1f}%)")
+            st.write(f"**Target 1:** {sensex['t1']:,.0f} ({sensex['profit_t1']:.1f}%)")
+            st.write(f"**Target 2:** {sensex['t2']:,.0f} ({sensex['profit_t2']:.1f}%)")
             
-            fig2 = make_chart(sensex['df'], "SENSEX", '#FF9800')
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(make_chart(sensex['df'], "SENSEX", '#FF9800'), use_container_width=True)
         
         st.markdown("---")
-        st.markdown("### 🎯 Combined Signal")
-        
         if nifty['trade'] == sensex['trade']:
-            st.success(f"✅ **Dono index {nifty['trade']} bol rahe hain — Strong Signal!**")
+            st.success(f"✅ **Dono {nifty['trade']} — Strong Signal!**")
         else:
-            st.warning(f"⚠️ **Conflict** — Nifty: {nifty['trade']}, Sensex: {sensex['trade']} — WAIT karo")
+            st.warning(f"⚠️ **Conflict** — WAIT karo")
 
 with tab2:
+    st.markdown("### 🌍 Global Markets — India Se Pehle Kya Ho Raha Hai")
+    st.caption("US aur Asia market raat ko chalta hai — India ke opening ko affect karta hai")
+    
+    if st.button("🔄 Global Data Refresh"):
+        st.cache_data.clear()
+    
+    with st.spinner("Global markets load kar raha hoon..."):
+        results, sentiment, up_count, down_count = get_global_sentiment()
+    
+    st.markdown("---")
+    st.markdown(f"## Global Sentiment: **{sentiment}**")
+    st.write(f"**{up_count} markets upar** • **{down_count} markets neeche**")
+    
+    if "BULLISH" in sentiment:
+        st.success("🟢 Global markets positive hain — Indian market bhi upar khulne ke chances zyada")
+    elif "BEARISH" in sentiment:
+        st.error("🔴 Global markets negative hain — Indian market gap-down khul sakta hai")
+    else:
+        st.warning("🟡 Mixed — koi clear direction nahi")
+    
+    st.markdown("---")
+    
+    # US Markets
+    st.markdown("### 🇺🇸 US Markets (Raat ko chalta hai)")
+    us_markets = ['Dow Jones', 'S&P 500', 'Nasdaq']
+    cols = st.columns(3)
+    for i, name in enumerate(us_markets):
+        if name in results:
+            data = results[name]
+            with cols[i]:
+                emoji = "🟢" if data['up'] else "🔴"
+                st.metric(f"{emoji} {name}", f"{data['price']:,.0f}", 
+                         f"{data['change_pct']:+.2f}%")
+    
+    st.markdown("### 🇯🇵🇭🇰 Asia Markets")
+    asia_markets = ['Nikkei', 'Hang Seng']
+    cols = st.columns(2)
+    for i, name in enumerate(asia_markets):
+        if name in results:
+            data = results[name]
+            with cols[i]:
+                emoji = "🟢" if data['up'] else "🔴"
+                st.metric(f"{emoji} {name}", f"{data['price']:,.0f}",
+                         f"{data['change_pct']:+.2f}%")
+    
+    st.markdown("### 🇬🇧🇩🇪 Europe Markets")
+    eu_markets = ['FTSE', 'DAX']
+    cols = st.columns(2)
+    for i, name in enumerate(eu_markets):
+        if name in results:
+            data = results[name]
+            with cols[i]:
+                emoji = "🟢" if data['up'] else "🔴"
+                st.metric(f"{emoji} {name}", f"{data['price']:,.0f}",
+                         f"{data['change_pct']:+.2f}%")
+    
+    st.markdown("---")
+    st.info("💡 **Kaise use karo:** Agar US market raat ko strong upar close hua → subah Indian market bhi upar khulne ke chances zyada. Global sentiment ke saath apne signal ko confirm karo.")
+
+with tab3:
     st.markdown("### 🎙️ Voice Assistant")
-    st.write("Button dabao aur bolo — ya type karo")
     
     col1, col2 = st.columns([3, 1])
     with col1:
@@ -295,7 +406,8 @@ with tab2:
             with st.spinner("Analyzing..."):
                 n = analyze_index("NIFTY")
                 s = analyze_index("SENSEX")
-            msg = voice_text(n, s, vix)
+                _, sentiment, _, _ = get_global_sentiment()
+            msg = voice_text(n, s, vix, sentiment)
             st.success("📢 App bol raha hai:")
             st.write(msg)
             st.components.v1.html(f"""
@@ -312,7 +424,8 @@ with tab2:
         with st.spinner("Analyzing..."):
             n = analyze_index("NIFTY")
             s = analyze_index("SENSEX")
-        msg = voice_text(n, s, vix)
+            _, sentiment, _, _ = get_global_sentiment()
+        msg = voice_text(n, s, vix, sentiment)
         st.markdown("---")
         st.markdown("### 🤖 App Ka Jawab")
         st.success(msg)
@@ -320,7 +433,7 @@ with tab2:
         <button onclick="speak()" style="
             background: #4CAF50; color: white; border: none;
             padding: 15px 30px; font-size: 16px; border-radius: 50px;
-            cursor: pointer; margin: 10px 0;
+            cursor: pointer;
         ">🔊 Voice me Suno</button>
         <script>
         function speak() {{
@@ -331,17 +444,12 @@ with tab2:
         }}
         </script>
         """, height=80)
-    
-    st.markdown("---")
-    st.markdown("### 💡 Aise bol sakte ho:")
-    st.write("• **'Nifty aur Sensex kaisa hai?'**")
-    st.write("• **'Dono me buy karu ya sell?'**")
 
-with tab3:
+with tab4:
     st.subheader("📝 Training Log")
     log = load_log()
     if not log:
-        st.info("Live Dashboard pe jao, signals dekho, aur log karo.")
+        st.info("Live tab pe signals dekho aur log karo.")
     else:
         for i, entry in enumerate(log):
             with st.expander(f"#{i+1} — {entry['date']} — {entry['symbol']} {entry['trade']} — {entry['result']}"):
@@ -356,7 +464,7 @@ with tab3:
             save_log([])
             st.rerun()
 
-with tab4:
+with tab5:
     st.subheader("📈 Accuracy Dashboard")
     log = load_log()
     if not log:
@@ -375,11 +483,6 @@ with tab4:
         c3.metric("❌ Galat", galat)
         c4.metric("⏸️ Pending", pending)
         st.metric("🎯 Accuracy", f"{accuracy:.1f}%")
-        
-        if completed > 0:
-            if accuracy >= 65: st.success(f"🔥 Excellent {accuracy:.1f}%")
-            elif accuracy >= 55: st.warning(f"👍 Theek hai {accuracy:.1f}%")
-            else: st.error(f"❌ {accuracy:.1f}% — Improve karo")
 
 st.markdown("---")
-st.caption(f"Updated: {datetime.now().strftime('%d-%b-%Y %H:%M:%S')} | Educational only. Paper trade first.")
+st.caption(f"Updated: {datetime.now().strftime('%d-%b-%Y %H:%M')} | Educational only. Paper trade first.")
